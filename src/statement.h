@@ -118,6 +118,13 @@ public:
         Rows rows;
     };
 
+    struct MaxRowsBaton : Baton {
+        MaxRowsBaton(Statement* stmt_, Local<Function> cb_) :
+            Baton(stmt_, cb_), maxRows(0) {}
+        Rows rows;
+        int32_t maxRows;
+    };
+
     struct Async;
 
     struct EachBaton : Baton {
@@ -201,6 +208,7 @@ public:
 
     WORK_DEFINITION(Bind);
     WORK_DEFINITION(Get);
+    WORK_DEFINITION(GetMultiple);
     WORK_DEFINITION(Run);
     WORK_DEFINITION(All);
     WORK_DEFINITION(Each);

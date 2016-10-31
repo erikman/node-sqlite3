@@ -21,6 +21,7 @@ NAN_MODULE_INIT(Statement::Init) {
 
     Nan::SetPrototypeMethod(t, "bind", Bind);
     Nan::SetPrototypeMethod(t, "get", Get);
+    Nan::SetPrototypeMethod(t, "getMultiple", GetMultiple);
     Nan::SetPrototypeMethod(t, "run", Run);
     Nan::SetPrototypeMethod(t, "all", All);
     Nan::SetPrototypeMethod(t, "each", Each);
@@ -481,6 +482,93 @@ void Statement::Work_AfterRun(uv_work_t* req) {
 
             Local<Value> argv[] = { Nan::Null() };
             TRY_CATCH_CALL(stmt->handle(), cb, 1, argv);
+        }
+    }
+
+    STATEMENT_END();
+}
+
+NAN_METHOD(Statement::GetMultiple) {
+    Statement* stmt = Nan::ObjectWrap::Unwrap<Statement>(info.This());
+
+    REQUIRE_ARGUMENTS(1);
+
+    int32_t maxRows = 1;
+    if (info[0]->IsInt32()) {
+        maxRows = Nan::To<int32_t>(info[0]).FromJust();
+    }
+
+    MaxRowsBaton* baton = stmt->Bind<MaxRowsBaton>(info, 1);
+    if (baton == NULL) {
+        return Nan::ThrowError("Data type is not supported");
+    }
+    else {
+        baton->maxRows = maxRows;
+        stmt->Schedule(Work_BeginGetMultiple, baton);
+        info.GetReturnValue().Set(info.This());
+    }
+}
+
+void Statement::Work_BeginGetMultiple(Baton* baton) {
+    STATEMENT_BEGIN(GetMultiple);
+}
+
+void Statement::Work_GetMultiple(uv_work_t* req) {
+    STATEMENT_INIT(MaxRowsBaton);
+
+    sqlite3_mutex* mtx = sqlite3_db_mutex(stmt->db->_handle);
+    sqlite3_mutex_enter(mtx);
+
+    if (stmt->Bind(baton->parameters)) {
+      for (int rowCount = 0;
+           (rowCount < baton->maxRows) && (stmt->status = sqlite3_step(stmt->_handle)) == SQLITE_ROW;
+           rowCount++) {
+            Row* row = new Row();
+            GetRow(row, stmt->_handle);
+            baton->rows.push_back(row);
+        }
+
+        if (stmt->status != SQLITE_DONE && stmt->status != SQLITE_ROW) {
+            stmt->message = std::string(sqlite3_errmsg(stmt->db->_handle));
+        }
+    }
+
+    sqlite3_mutex_leave(mtx);
+}
+
+void Statement::Work_AfterGetMultiple(uv_work_t* req) {
+    Nan::HandleScope scope;
+
+    STATEMENT_INIT(MaxRowsBaton);
+
+    if (stmt->status != SQLITE_DONE && stmt->status != SQLITE_ROW) {
+        Error(baton);
+    }
+    else {
+        // Fire callbacks.
+        Local<Function> cb = Nan::New(baton->callback);
+        if (!cb.IsEmpty() && cb->IsFunction()) {
+            if (baton->rows.size()) {
+                // Create the result array from the data we acquired.
+                Local<Array> result(Nan::New<Array>(baton->rows.size()));
+                Rows::const_iterator it = baton->rows.begin();
+                Rows::const_iterator end = baton->rows.end();
+                for (int i = 0; it < end; ++it, i++) {
+                    Nan::Set(result, i, RowToJS(*it));
+                    delete *it;
+                }
+
+                Local<Value> argv[] = { Nan::Null(), result };
+                TRY_CATCH_CALL(stmt->handle(), cb, 2, argv);
+            }
+            else {
+                // There were no result rows.
+                Local<Value> argv[] = {
+                    Nan::Null(),
+                    Nan::New<Array>(0)
+                };
+                TRY_CATCH_CALL(stmt->handle(), cb, 2, argv);
+            }
         }
     }
 
